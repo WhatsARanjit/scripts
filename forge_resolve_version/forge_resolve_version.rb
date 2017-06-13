@@ -1,6 +1,6 @@
 #!/opt/puppetlabs/puppet/bin/ruby
 
-require "net/https"
+require"net/https"
 require "uri"
 require "json"
 require 'optparse'
@@ -107,30 +107,52 @@ file_in = File.open(input, "r") do |fh|
   end
 end
 
+queue      = Queue.new
+queue_deps = Queue.new
+
 # Search retrieved modules
-$mods_read.each do |mod|
-  mod.gsub!(/\//,'-')
-  # Method will retusn nil if mod not found
-  name, version, moddeps = findModuleData(mod)
-  if name then
-    processModules(name, version, moddeps)
-  else
-    $not_found.push(mod)
+producer = Thread.new do
+  $mods_read.each do |mod|
+    mod.gsub!(/\//,'-')
+    # Method will retusn nil if mod not found
+    queue << findModuleData(mod)
   end
 end
 
-# Look for dependencies
-unless $deps.empty?
-  $deps.each do |dep|
-    # Dependencies are returned with a slash, yay for consistency
-    mod = dep["name"].gsub!(/\//, "-")
-    name, version, moddeps = findModuleData(mod)
+consumer = Thread.new do
+  while producer.alive? && consumer.alive?
+    name, version, moddeps = queue.pop
     if name then
       processModules(name, version, moddeps)
     else
       $not_found.push(mod)
     end
   end
+  # Look for dependencies
+  unless $deps.empty?
+    $deps.each do |dep|
+      # Dependencies are returned with a slash, yay for consistency
+      mod = dep["name"].gsub!(/\//, "-")
+      queue_deps << findModuleData(mod)
+    end
+  end
+end
+
+consumer_deps = Thread.new do
+  while consumer.alive? && consumer_deps.alive?
+    name, version, moddeps = queue_deps.pop
+    puts name
+    if name then
+      processModules(name, version, moddeps)
+    else
+      $not_found.push(mod)
+    end
+  end
+end
+
+# Wait for all threads to complete
+while producer.alive? || consumer.alive? || consumer_deps.alive?
+  sleep 3
 end
 
 # return the data found
