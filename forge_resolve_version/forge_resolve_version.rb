@@ -48,7 +48,7 @@ class ControlRepo
   attr_reader :modules, :mlist, :gitmods
 
   def initialize(path)
-    puppetfile = R10K::Puppetfile.new(File.dirname(path))
+    puppetfile = R10K::Puppetfile.new(File.dirname(path), "#{Puppet.settings['environmentpath']}/#{Puppet.settings['environment']}/modules", path)
     puppetfile.load!
     @modules   = puppetfile.modules
     @gitmods   = Array.new
@@ -65,12 +65,14 @@ class ControlRepo
         res = forge_call(mod['owner'], mod['name'])
 
         if res.code == '200'
-          data = JSON.parse(res.body)
-          forge_data[data['slug']] = {
-            'version' => data['current_release']['version'],
-            'deps'    => data['current_release']['metadata']['dependencies'],
-          }
-          puts "New version: #{data['slug']}-#{data['current_release']['version']}!"
+          data = JSON.parse(res.body)['results'].first
+          if data.is_a?(Hash)
+            forge_data[data['module']['slug']] = {
+              'version' => data['version'],
+              'deps'    => data['metadata']['dependencies'],
+            }
+            puts "New version: #{data['module']['slug']}, #{data['version']}!" if data['version'] != mod['version']
+          end
         end
       end
     end
@@ -98,10 +100,15 @@ class ControlRepo
   end
 
   def write_puppetfile(target, list)
-    content  = "# Forge modules\n"
-    content += list.map { |k,v| "mod '#{k}', '#{v['version']}'" }.join("\n")
-    content += "\n\n# Git modules\n"
-    content += gitmod_args.join("\n")
+    content = ''
+    if list.length > 0
+      content += "# Forge modules\n"
+      content += list.map { |k,v| "mod '#{k}', '#{v['version']}'" }.join("\n")
+    end
+    if @gitmods.length > 0
+      content += "\n\n# Git modules\n"
+      content += gitmod_args.join("\n")
+    end
     begin
       File.open(target, 'w') { |f| f.write(content) }
     rescue e
@@ -120,9 +127,9 @@ class ControlRepo
         list << {
           'owner'   => m.owner,
           'name'    => m.name,
-          'version' => m.version,
+          'version' => m.expected_version,
         }
-        puts "Found module '#{m.owner}-#{m.name} v#{m.version}..."
+        puts "Found module '#{m.owner}-#{m.name} v#{m.expected_version}..."
       end
       if m.is_a?(R10K::Module::Forge)
         begin
@@ -164,7 +171,7 @@ class ControlRepo
   end
 
   def forge_call(owner, mod)
-    url              = "https://forgeapi.puppet.com:443/v3/modules/#{owner}-#{mod}"
+    url              = "https://forgeapi.puppet.com:443/v3/releases?module=#{owner}-#{mod}&limit=1&sort_by=release_date"
     uri              = URI.parse(url)
     http             = Net::HTTP.new(uri.host, uri.port)
     http.use_ssl     = true
